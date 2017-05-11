@@ -27,7 +27,7 @@ var (
 type libstore struct {
 	// TODO: implement this!
 	masterCli               *rpc.Client
-	sortedSlaveId           uintArray
+	sortedSlaveId           UintArray
 	slavesCli               map[uint32]*rpc.Client
 	hostPort                string
 	mode                    LeaseMode
@@ -170,7 +170,6 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
-	logger.Println("call put..........", key)
 	var reply storagerpc.PutReply
 	args := &storagerpc.PutArgs{
 		Key:   key,
@@ -376,16 +375,16 @@ func (tw *timeWheel) runInLoop() {
 	}
 }
 
-type uintArray []uint32
+type UintArray []uint32
 
-func (uints uintArray) Len() int {
+func (uints UintArray) Len() int {
 	return len(uints)
 }
 
-func (uints uintArray) Less(i, j int) bool {
+func (uints UintArray) Less(i, j int) bool {
 	return uints[i] < uints[j]
 }
 
-func (uints uintArray) Swap(i, j int) {
+func (uints UintArray) Swap(i, j int) {
 	uints[i], uints[j] = uints[j], uints[i]
 }
