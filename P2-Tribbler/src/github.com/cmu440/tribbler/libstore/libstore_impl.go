@@ -1,11 +1,15 @@
 package libstore
 
 import (
-  "fmt"
 	"container/list"
 	"errors"
-	rpc "net/rpc"
+	"fmt"
+	"log"
+	"os"
+	"sort"
 	"time"
+  "strings"
+	rpc "net/rpc"
 	//http "net/http"
 
 	"github.com/cmu440/tribbler/rpc/librpc"
@@ -16,9 +20,14 @@ const (
 	MAXN = 1024
 )
 
+var (
+	logger *log.Logger
+)
+
 type libstore struct {
 	// TODO: implement this!
 	masterCli               *rpc.Client
+	sortedSlaveId           uintArray
 	slavesCli               map[uint32]*rpc.Client
 	hostPort                string
 	mode                    LeaseMode
@@ -65,22 +74,26 @@ type cacheInfo struct {
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
 	ls := &libstore{
-		ticker:   time.NewTicker(time.Millisecond * 1000),
-		hostPort: myHostPort,
-		mode:     mode,
-    slavesCli: make(map[uint32]*rpc.Client, 1),
-    kvCache:  make(map[string]interface{}, 1),
-    cacheTime:make(map[string]int, 1),
-    cacheOrNot:  make(chan bool, MAXN),
-    replyRevoke:  make(chan bool, MAXN),
-    queryCh:  make(chan string, MAXN),
-    revokeChan:make(chan string, MAXN),
-    addCh:    make(chan cacheInfo, MAXN),
-    answerCh: make(chan interface{}, MAXN)}
-  if len(myHostPort) == 0 {
-    ls.mode = Never
-  }
-	var err error
+		ticker:      time.NewTicker(time.Millisecond * 1000),
+		hostPort:    myHostPort,
+		mode:        mode,
+		slavesCli:   make(map[uint32]*rpc.Client, 1),
+		kvCache:     make(map[string]interface{}, 1),
+		cacheTime:   make(map[string]int, 1),
+		cacheOrNot:  make(chan bool, MAXN),
+		replyRevoke: make(chan bool, MAXN),
+		queryCh:     make(chan string, MAXN),
+		revokeChan:  make(chan string, MAXN),
+		addCh:       make(chan cacheInfo, MAXN),
+		answerCh:    make(chan interface{}, MAXN)}
+	serverLogFile, err := os.OpenFile("server_log.txt", os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	logger = log.New(serverLogFile, "Server-- ", log.Lmicroseconds|log.Lshortfile)
+	if len(myHostPort) == 0 {
+		ls.mode = Never
+	}
 	if err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(ls)); err != nil {
 		return nil, err
 	}
@@ -89,27 +102,27 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	}
 	args := &storagerpc.GetServersArgs{}
 	var reply storagerpc.GetServersReply
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 6; i++ {
 		if err := ls.masterCli.Call("StorageServer.GetServers", args, &reply); err == nil {
 			if reply.Status == storagerpc.OK {
-        index := uint32(0)
 				for _, serv := range reply.Servers {
 					slaveCli, err := rpc.DialHTTP("tcp", serv.HostPort)
 					if err != nil {
-            fmt.Println(err.Error())
+						fmt.Println(err.Error())
 						return nil, err
 					}
-					ls.slavesCli[index] = slaveCli
-          index++
+					ls.slavesCli[serv.NodeID] = slaveCli
+					ls.sortedSlaveId = append(ls.sortedSlaveId, serv.NodeID)
 				}
+				sort.Sort(ls.sortedSlaveId)
 				break
 			}
 		}
 		time.Sleep(time.Millisecond * 1000)
 	}
-  if reply.Status != storagerpc.OK {
-    return nil, errors.New("Error")
-  }
+	if reply.Status != storagerpc.OK {
+		return nil, errors.New("Error")
+	}
 	ls.tw.init(storagerpc.QueryCacheSeconds)
 	go ls.runInLoop()
 	go ls.tw.runInLoop()
@@ -117,16 +130,16 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-  ls.queryCh <- key
+	ls.queryCh <- key
 	exist := <-ls.cacheOrNot
 	if exist {
 		value := <-ls.answerCh
 		str_value, ok := value.(string)
-    if ok {
-		  return str_value, nil
-    } else {
-      return "", errors.New("type error.")
-    }
+		if ok {
+			return str_value, nil
+		} else {
+			return "", errors.New("type error.")
+		}
 	}
 	ls.tw.queryCh <- key
 	cnt := <-ls.tw.answerCh
@@ -141,8 +154,8 @@ func (ls *libstore) Get(key string) (string, error) {
 	var reply storagerpc.GetReply
 	cli := ls.RoutingServer(key)
 	if err := cli.Call("StorageServer.Get", args, &reply); err != nil {
-		return "", err
-	}
+	  return "", err
+  }
 	if reply.Status != storagerpc.OK {
 		return "", errors.New("Error Get")
 	}
@@ -157,17 +170,18 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
+	logger.Println("call put..........", key)
 	var reply storagerpc.PutReply
-  args := &storagerpc.PutArgs{
-                   Key: key,
-                   Value: value}
+	args := &storagerpc.PutArgs{
+		Key:   key,
+		Value: value}
 	cli := ls.RoutingServer(key)
 	if err := cli.Call("StorageServer.Put", args, &reply); err != nil {
-		return err
+	  return err
 	}
-  if reply.Status != storagerpc.OK {
-    return errors.New("Error Put")
-  }
+	if reply.Status != storagerpc.OK {
+		return errors.New("Error Put")
+	}
 	return nil
 }
 
@@ -177,11 +191,11 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	if exist {
 		value := <-ls.answerCh
 		splice_value, ok := value.([]string)
-    if ok {
-		  return splice_value, nil
-    } else {
-      return nil, errors.New("type error.")
-    }
+		if ok {
+			return splice_value, nil
+		} else {
+			return nil, errors.New("type error.")
+		}
 	}
 	ls.tw.queryCh <- key
 	cnt := <-ls.tw.answerCh
@@ -198,9 +212,9 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	if err := cli.Call("StorageServer.GetList", args, &reply); err != nil {
 		return nil, err
 	}
-  if reply.Status == storagerpc.KeyNotFound {
-    return nil, nil
-  }
+	if reply.Status == storagerpc.KeyNotFound {
+		return nil, nil
+	}
 	if reply.Status != storagerpc.OK {
 		return nil, errors.New("Error GetList")
 	}
@@ -216,44 +230,49 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
 	var reply storagerpc.PutReply
-  args := &storagerpc.PutArgs{
-                   Key: key,
-                   Value: removeItem}
+	args := &storagerpc.PutArgs{
+		Key:   key,
+		Value: removeItem}
 	cli := ls.RoutingServer(key)
 	if err := cli.Call("StorageServer.RemoveFromList", args, &reply); err != nil {
 		return err
 	}
-  if reply.Status == storagerpc.ItemNotFound {
-    return errors.New("ItemNotFound")
-  }
-  if reply.Status != storagerpc.OK {
-    return errors.New("Error RemoveFromList")
-  }
+	if reply.Status == storagerpc.ItemNotFound {
+		return errors.New("ItemNotFound")
+	}
+	if reply.Status != storagerpc.OK {
+		return errors.New("Error RemoveFromList")
+	}
 	return nil
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
 	var reply storagerpc.PutReply
-  args := &storagerpc.PutArgs{
-                   Key: key,
-                   Value: newItem}
+	args := &storagerpc.PutArgs{
+		Key:   key,
+		Value: newItem}
 	cli := ls.RoutingServer(key)
 	if err := cli.Call("StorageServer.AppendToList", args, &reply); err != nil {
 		return err
 	}
-  if reply.Status == storagerpc.ItemExists {
-    return errors.New("ItemExists")
-  }
-  if reply.Status != storagerpc.OK {
-    return errors.New("Error AppendToList")
-  }
+	if reply.Status == storagerpc.ItemExists {
+		return errors.New("ItemExists")
+	}
+	if reply.Status != storagerpc.OK {
+		return errors.New("Error AppendToList")
+	}
 	return nil
 }
 
 func (ls *libstore) RoutingServer(key string) *rpc.Client {
-	hash := StoreHash(key)
-  index := hash % uint32(len(ls.slavesCli))
-	return ls.slavesCli[index]
+  partition_keys := strings.Split(key, ":")
+	hash := StoreHash(partition_keys[0])
+	for _, value := range ls.sortedSlaveId {
+		if hash <= value {
+			return ls.slavesCli[value]
+		}
+	}
+	return ls.slavesCli[ls.sortedSlaveId[0]]
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
@@ -355,4 +374,18 @@ func (tw *timeWheel) runInLoop() {
 			tw.answerCh <- ans
 		}
 	}
+}
+
+type uintArray []uint32
+
+func (uints uintArray) Len() int {
+	return len(uints)
+}
+
+func (uints uintArray) Less(i, j int) bool {
+	return uints[i] < uints[j]
+}
+
+func (uints uintArray) Swap(i, j int) {
+	uints[i], uints[j] = uints[j], uints[i]
 }
