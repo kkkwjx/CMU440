@@ -157,7 +157,7 @@ func (ls *libstore) Get(key string) (string, error) {
 	  return "", err
   }
 	if reply.Status != storagerpc.OK {
-		return "", errors.New("Error Get")
+		return "", errors.New("Error Get" + fmt.Sprintf(" %v", reply.Status))
 	}
 	if reply.Lease.Granted {
 		ci := cacheInfo{

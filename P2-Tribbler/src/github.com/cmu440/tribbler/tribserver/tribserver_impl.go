@@ -161,7 +161,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	length := len(tribble_str_list)
 	for i := length - 1; i >= 0; i-- {
 		value := tribble_str_list[i]
-		timestamp := GetTribbleTimeFromStr(value)
+		_, timestamp, _ := ParseTribbleKey(value)
 		var tribble tribrpc.Tribble
 		tribble.UserID = args.UserID
 		tribble.Posted = time.Unix(0, timestamp).UTC()
@@ -200,27 +200,35 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 }
 
 func GenUserIDKey(user string) string {
-	return fmt.Sprintf("%s :userID", user)
+	return fmt.Sprintf("%s:userID", user)
 }
 
 func GenUserSubscriptionsKey(user string) string {
-	return fmt.Sprintf("%s :subscriptions_list", user)
+	return fmt.Sprintf("%s:subscriptions_list", user)
 }
 
 func GenUserTribblesKey(user string) string {
-	return fmt.Sprintf("%s :tribbles_list", user)
+	return fmt.Sprintf("%s:tribbles_list", user)
 }
 
 func GenTribbleKey(user string, timestamp int64, contents string) string {
-	return fmt.Sprintf("%s :tribble %v %v", user, timestamp, libstore.StoreHash(contents))
+	return fmt.Sprintf("%s:tribble %v %v", user, timestamp, libstore.StoreHash(contents))
 }
 
 func GetTribbleTimeFromStr(tribble_str string) int64 {
 	var userID string
 	var timestamp int64
 	var contentsHash uint64
-	fmt.Sscanf(tribble_str, "%s :tribble %v %v", &userID, &timestamp, &contentsHash)
+	fmt.Sscanf(tribble_str, "%s:tribble %v %v", &userID, &timestamp, &contentsHash)
 	return timestamp
+}
+
+func ParseTribbleKey(tribble_key string) (string, int64, uint64) {
+	arr := strings.Split(tribble_key, ":")
+	var timestamp int64
+	var contentsHash uint64
+	fmt.Sscanf(arr[1], "tribble %v %v", &timestamp, contentsHash)
+	return arr[0], timestamp, contentsHash
 }
 
 func (ts *tribServer) GetLateSubscriptionsTribbes(sub_list []string) ([]tribrpc.Tribble, error) {
@@ -240,10 +248,11 @@ func (ts *tribServer) GetLateSubscriptionsTribbes(sub_list []string) ([]tribrpc.
 		if len(tribble_str_list) == 0 {
 			continue
 		}
+		_, timestamp, _ := ParseTribbleKey(tribble_str_list[last])
 		item := &sortItem{
 			pos:       pos,
 			key:       tribble_str_list[last],
-			timestamp: GetTribbleTimeFromStr(tribble_str_list[last])}
+			timestamp: timestamp}
 		heap.Push(&pq, item)
 	}
 	var tribble_keys []string
@@ -254,19 +263,19 @@ func (ts *tribServer) GetLateSubscriptionsTribbes(sub_list []string) ([]tribrpc.
 		if sub_trib_index[item.pos] >= 0 {
 			tribble_str_list := sub_trib_list[item.pos]
 			idx := sub_trib_index[item.pos]
+			_, timestamp, _ := ParseTribbleKey(tribble_str_list[idx])
 			item := &sortItem{
 				pos:       item.pos,
 				key:       tribble_str_list[idx],
-				timestamp: GetTribbleTimeFromStr(tribble_str_list[idx])}
+				timestamp: timestamp}
 			heap.Push(&pq, item)
 		}
 	}
 	var tribbles []tribrpc.Tribble
 	for _, value := range tribble_keys {
 		var tribble tribrpc.Tribble
-		var timestamp int64
-		var contentsHash uint64
-		fmt.Sscanf(value, "%s :tribble %v %v", &tribble.UserID, &timestamp, &contentsHash)
+		userID, timestamp, _ := ParseTribbleKey(value)
+		tribble.UserID = userID
 		tribble.Posted = time.Unix(0, timestamp).UTC()
 		if tribble.Contents, err = ts.storage.Get(value); err != nil {
 			return nil, err
