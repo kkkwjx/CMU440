@@ -3,10 +3,10 @@
 package p0
 
 import (
-  "fmt"
-  "bufio"
-  "net"
-  "strings"
+	"bufio"
+	"fmt"
+	"net"
+	"strings"
 )
 
 const MAXN = 500
@@ -25,10 +25,10 @@ func New() KeyValueServer {
 	// TODO: implement this!
 	s := &keyValueServer{
 		nowClientId: 0,
-    kvChan:      make(chan int, 1),
+		kvChan:      make(chan int, 1),
 		clients:     make(chan map[int]*client, 1),
 		broadChan:   make(chan []byte, 1)}
-  s.kvChan <- 1
+	s.kvChan <- 1
 	s.clients <- make(map[int]*client, 1)
 	return s
 }
@@ -173,14 +173,14 @@ func (kvs *keyValueServer) broadCastLoop() {
 func (kvs *keyValueServer) parse(msg string) (bool, string) {
 	words := strings.Split(msg, ",")
 	if len(words) == 3 && strings.EqualFold(words[0], "put") {
-    words[2] = strings.TrimSpace(words[2])
-    <- kvs.kvChan
+		words[2] = strings.TrimSpace(words[2])
+		<-kvs.kvChan
 		put(words[1], []byte(words[2]))
 		kvs.kvChan <- 1
 		return false, ""
 	} else if len(words) == 2 && strings.EqualFold(words[0], "get") {
-    words[1] = strings.TrimSpace(words[1])
-		<- kvs.kvChan
+		words[1] = strings.TrimSpace(words[1])
+		<-kvs.kvChan
 		value := get(words[1])
 		res := fmt.Sprintf("%v,%v\n", words[1], string(value))
 		kvs.kvChan <- 1
