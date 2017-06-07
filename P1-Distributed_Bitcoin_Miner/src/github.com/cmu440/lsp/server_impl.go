@@ -6,7 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync/atomic"
+	"sync"
+  atomic "sync/atomic"
 	"time"
 
 	"github.com/cmu440/lspnet"
@@ -14,19 +15,21 @@ import (
 
 type server struct {
 	// base
-	params          *Params
-	conn            *lspnet.UDPConn
-	nowClientId     int
-	clients         chan map[int]*client // thread safe
+	params      *Params
+	conn        *lspnet.UDPConn
+	nowClientId int
+	mutex       sync.Mutex
+	clients     map[int]*client // thread safe
+	connMap     map[string]int  // use same channel with clients
 	// recv
-	recvMsgChan     chan interface{}
+	recvMsgChan chan interface{}
 	// close
 	isClose         bool
 	toCloseChan     chan int // to notify server to close
 	doneCloseChan   chan int // wait server close
 	closeClientChan chan int // to notify delete closed sclient
 	// debug
-	goRoutineCnt    int32 // atmic
+	goRoutineCnt int32 // atmic
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -48,7 +51,8 @@ func NewServer(port int, params *Params) (Server, error) {
 	}
 	s := &server{
 		params:          params,
-		clients:         make(chan map[int]*client, 1),
+		clients:         make(map[int]*client, 1),
+		connMap:     make(map[string]int, 1),
 		toCloseChan:     make(chan int, 1),
 		doneCloseChan:   make(chan int, 1),
 		closeClientChan: make(chan int, MAXN),
@@ -57,7 +61,6 @@ func NewServer(port int, params *Params) (Server, error) {
 		nowClientId:     0,
 		isClose:         false,
 		goRoutineCnt:    0}
-	s.clients <- make(map[int]*client)
 	go s.recvMsgLoop()
 	return s, nil
 }
@@ -71,9 +74,9 @@ func (s *server) Read() (int, []byte, error) {
 				return id, nil, errors.New("The server read eror, some client has been lost.")
 			}
 			msg := data.(*Message)
-			cli := <-s.clients
-			_, ok = cli[msg.ConnID]
-			s.clients <- cli
+			s.mutex.Lock()
+			_, ok = s.clients[msg.ConnID]
+			s.mutex.Unlock()
 			if !ok {
 				continue
 				//return msg.ConnID, nil, errors.New("The client is explicitly closed.")
@@ -86,9 +89,9 @@ func (s *server) Read() (int, []byte, error) {
 }
 
 func (s *server) Write(connID int, payload []byte) error {
-	cli := <-s.clients
-	c, ok := cli[connID]
-	s.clients <- cli
+	s.mutex.Lock()
+	c, ok := s.clients[connID]
+	s.mutex.Unlock()
 	if !ok {
 		return errors.New("The connection with client has closed.")
 	}
@@ -99,9 +102,9 @@ func (s *server) Write(connID int, payload []byte) error {
 }
 
 func (s *server) CloseConn(connID int) error {
-	cli := <-s.clients
-	c, ok := cli[connID]
-	s.clients <- cli
+	s.mutex.Lock()
+	c, ok := s.clients[connID]
+	s.mutex.Unlock()
 	if !ok {
 		return errors.New("The connecion with client has lost.")
 	}
@@ -110,11 +113,11 @@ func (s *server) CloseConn(connID int) error {
 }
 
 func (s *server) Close() error {
-	cli := <-s.clients
-	for _, c := range cli {
+	s.mutex.Lock()
+	for _, c := range s.clients {
 		c.toCloseChan <- 1
 	}
-	s.clients <- cli
+	s.mutex.Unlock()
 	s.toCloseChan <- 1
 	<-s.doneCloseChan
 	s.conn.Close()
@@ -130,19 +133,21 @@ func (s *server) recvMsgLoop() {
 		select {
 		case <-s.toCloseChan:
 			s.isClose = true
-			cli := <-s.clients
-			clientCnt := len(cli)
-			s.clients <- cli
+			s.mutex.Lock()
+			clientCnt := len(s.clients)
+			s.mutex.Unlock()
 			if clientCnt == 0 {
 				s.doneCloseChan <- 1
 				return
 			}
 		case connId := <-s.closeClientChan:
 			// connection is lost
-			cli := <-s.clients
-			delete(cli, connId)
-			clientCnt := len(cli)
-			s.clients <- cli
+			s.mutex.Lock()
+			raddrStr := s.clients[connId].rAddr.String()
+			delete(s.connMap, raddrStr)
+			delete(s.clients, connId)
+			clientCnt := len(s.clients)
+			s.mutex.Unlock()
 			if s.isClose && clientCnt == 0 {
 				s.doneCloseChan <- 1
 				return
@@ -156,19 +161,26 @@ func (s *server) recvMsgLoop() {
 				if s.isClose {
 					continue
 				}
-				s.nowClientId = s.nowClientId + 1
-				c := createClient(s.params, s.conn, rAddr)
-				c.connID = s.nowClientId
-				cli := <-s.clients
-				cli[s.nowClientId] = c
-				s.clients <- cli
-				ack := NewAck(s.nowClientId, 0)
+				raddrStr := rAddr.String()
+				s.mutex.Lock()
+				clientId, ok := s.connMap[raddrStr]
+				if !ok {
+					s.nowClientId = s.nowClientId + 1
+					clientId = s.nowClientId
+					s.connMap[raddrStr] = clientId
+					c := createClient(s.params, s.conn, rAddr)
+					c.connID = clientId
+					s.clients[clientId] = c
+					go c.processMsgLoop(&s.goRoutineCnt, s.recvMsgChan, s.closeClientChan, serverSendMessage)
+				}
+				c := s.clients[clientId]
+				ack := NewAck(clientId, 0)
 				serverSendMessage(c, ack)
-				go c.processMsgLoop(&s.goRoutineCnt, s.recvMsgChan, s.closeClientChan, serverSendMessage)
+				s.mutex.Unlock()
 			} else {
-				cli := <-s.clients
-				c, ok := cli[msg.ConnID]
-				s.clients <- cli
+				s.mutex.Lock()
+				c, ok := s.clients[msg.ConnID]
+				s.mutex.Unlock()
 				if !ok {
 					//fmt.Printf("client with connID %d is not exist.", msg.ConnID)
 					continue

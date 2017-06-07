@@ -18,11 +18,11 @@ const MAXN = 1024
 
 type client struct {
 	// base
-	conn              *lspnet.UDPConn
-	connID            int
-	nowSeqNum         int
-	rAddr             *lspnet.UDPAddr
-	params            *Params
+	conn      *lspnet.UDPConn
+	connID    int
+	nowSeqNum int
+	rAddr     *lspnet.UDPAddr
+	params    *Params
 	// send
 	sendMsgChan       chan *Message
 	pendIngSendMsg    *list.List
@@ -30,21 +30,21 @@ type client struct {
 	unAckedMsgSnTable map[int]bool
 	firstUnAckedSn    int
 	// recv
-	pendIngRecvMsg    *list.List
-	recvMsgChan       chan interface{}
-	recvMsgWindows    map[int]*Message
-	firstRecvMsgSn    int
-	recvMsgCnt        int
-	transMsgChan      chan *Message
+	pendIngRecvMsg *list.List
+	recvMsgChan    chan interface{}
+	recvMsgWindows map[int]*Message
+	firstRecvMsgSn int
+	recvMsgCnt     int
+	transMsgChan   chan *Message
 	// epoch
-	epochTimer        *time.Timer
-	noMsgEpochCnt     int
+	epochTimer    *time.Timer
+	noMsgEpochCnt int
 	// close
-	isClose           bool
-	isLost            int32 // atomic
-	toCloseChan       chan int
-	doneCloseChan     chan int
-	closeClientChan   chan int
+	isClose         bool
+	isLost          int32 // atomic
+	toCloseChan     chan int
+	doneCloseChan   chan int
+	closeClientChan chan int
 	//debug
 	goRoutineCnt int32 // atomic
 }
