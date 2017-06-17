@@ -5,6 +5,9 @@ import (
 	"container/heap"
 	"fmt"
 	"net"
+  "sync"
+  //"log"
+  //"os"
 	http "net/http"
 	rpc "net/rpc"
 	"strings"
@@ -14,10 +17,15 @@ import (
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 )
 
+var (
+	//logger *log.Logger
+)
+
 type tribServer struct {
 	// TODO: implement this!
 	listener net.Listener
 	storage  libstore.Libstore
+  storeMutex  sync.Mutex
 	//	storageCli *rpc.Client
 }
 
@@ -28,7 +36,10 @@ type tribServer struct {
 //
 // For hints on how to properly setup RPC, see the rpc/tribrpc package.
 func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) {
-	ts := new(tribServer)
+	//serverLogFile, _ := os.OpenFile("log_tribserver." + myHostPort, os.O_RDWR | os.O_CREATE, 0666)
+	//logger = log.New(serverLogFile, "[Tribserver]", log.Lmicroseconds|log.Lshortfile)
+
+	ts := &tribServer{}
 	var err error
 	if ts.listener, err = net.Listen("tcp", myHostPort); err != nil {
 		//fmt.Println(myHostPort, err.Error())
@@ -46,31 +57,39 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 }
 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
+  //logger.Println("Call CreateUser. args.UserID: ", args.UserID)
 	userid_key := GenUserIDKey(args.UserID)
-	//fmt.Println("go here", userid_key)
 	var err error
+  ts.storeMutex.Lock()
+  defer ts.storeMutex.Unlock()
 	if _, err = ts.storage.Get(userid_key); err == nil {
 		reply.Status = tribrpc.Exists
+    //logger.Println("Return CreateUser. fail. args.UserID. err: ", args.UserID, "Exists")
 		return nil
 	}
-	//fmt.Println("go here2")
 	if err = ts.storage.Put(userid_key, ""); err != nil {
+    //logger.Println("Return CreateUser. fail. args.UserID. err: ", args.UserID, err.Error())
 		return err
 	}
-	//fmt.Println("go here3")
 	reply.Status = tribrpc.OK
+  //logger.Println("Return CreateUser. args.UserID: ", args.UserID)
 	return nil
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
+  //logger.Println("Call AddSubscription. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID)
 	var err error
 	userid_key := GenUserIDKey(args.UserID)
+  ts.storeMutex.Lock()
+  defer ts.storeMutex.Unlock()
 	if _, err = ts.storage.Get(userid_key); err != nil {
+    //logger.Println("Return AddSubscription. fail. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, "NoSuchUser")
 		reply.Status = tribrpc.NoSuchUser
 		return nil
 	}
 	target_userid_key := GenUserIDKey(args.TargetUserID)
 	if _, err = ts.storage.Get(target_userid_key); err != nil {
+    //logger.Println("Return AddSubscription. fail. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, "NoSuchTargetUser")
 		reply.Status = tribrpc.NoSuchTargetUser
 		return nil
 	}
@@ -78,41 +97,55 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 	if err = ts.storage.AppendToList(user_sub_key, args.TargetUserID); err != nil {
 		if strings.EqualFold(err.Error(), "ItemExists") {
 			reply.Status = tribrpc.Exists
+    //logger.Println("Return AddSubscription. fail. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, "Exists")
 			return nil
 		}
+    //logger.Println("Return AddSubscription. fail. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, err.Error())
 		return err
 	}
 	reply.Status = tribrpc.OK
+  //logger.Println("Return AddSubscription. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID)
 	return nil
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
+  //logger.Println("Call RemoveSubscription. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID)
 	var err error
 	userid_key := GenUserIDKey(args.UserID)
+  ts.storeMutex.Lock()
+  defer ts.storeMutex.Unlock()
 	if _, err = ts.storage.Get(userid_key); err != nil {
 		reply.Status = tribrpc.NoSuchUser
+    //logger.Println("Return RemoveSubscription. fail args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, "NoSuchUser")
 		return nil
 	}
 	target_userid_key := GenUserIDKey(args.TargetUserID)
 	if _, err = ts.storage.Get(target_userid_key); err != nil {
 		reply.Status = tribrpc.NoSuchTargetUser
+    //logger.Println("Return RemoveSubscription. fail args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, "NoSuchTargetUser")
 		return nil
 	}
 	user_sub_key := GenUserSubscriptionsKey(args.UserID)
 	if err = ts.storage.RemoveFromList(user_sub_key, args.TargetUserID); err != nil {
 		if strings.EqualFold(err.Error(), "ItemNotFound") {
 			reply.Status = tribrpc.NoSuchTargetUser
+    //logger.Println("Return RemoveSubscription. fail args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, "NoSuchTargetUser2")
 			return nil
 		}
+    //logger.Println("Return RemoveSubscription. fail args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID, err.Error())
 		return err
 	}
 	reply.Status = tribrpc.OK
+  //logger.Println("Return RemoveSubscription. args.UserID, args.TargetUserID ", args.UserID, args.TargetUserID)
 	return nil
 }
 
 func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply *tribrpc.GetSubscriptionsReply) error {
+  //logger.Println("Call GetSubscriptions. args.UserID", args.UserID)
 	var err error
 	userid_key := GenUserIDKey(args.UserID)
+  ts.storeMutex.Lock()
+  defer ts.storeMutex.Unlock()
 	if _, err = ts.storage.Get(userid_key); err != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return nil
@@ -122,32 +155,43 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 		return err
 	}
 	reply.Status = tribrpc.OK
+  //logger.Println("Return GetSubscriptions. args.UserID", args.UserID)
 	return nil
 }
 
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
+  //logger.Println("Call PostTribble. args.UserID", args.UserID)
 	var err error
 	userid_key := GenUserIDKey(args.UserID)
+  ts.storeMutex.Lock()
+  defer ts.storeMutex.Unlock()
 	if _, err = ts.storage.Get(userid_key); err != nil {
 		reply.Status = tribrpc.NoSuchUser
+    //logger.Println("Return PostTribble. fail. args.UserID", args.UserID)
 		return nil
 	}
 	tribble_key_list := GenUserTribblesKey(args.UserID)
 	timestamp := time.Now().UnixNano()
 	tribble_key := GenTribbleKey(args.UserID, timestamp, args.Contents)
 	if err = ts.storage.AppendToList(tribble_key_list, tribble_key); err != nil {
+    //logger.Println("Return PostTribble. fail. args.UserID", args.UserID, err.Error())
 		return err
 	}
 	if err = ts.storage.Put(tribble_key, args.Contents); err != nil {
+    //logger.Println("Return PostTribble. fail. args.UserID", args.UserID, err.Error())
 		return err
 	}
 	reply.Status = tribrpc.OK
+  //logger.Println("Return PostTribble. args.UserID", args.UserID)
 	return nil
 }
 
 func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
+  //logger.Println("Call GetTribbles. args.UserID", args.UserID)
 	var err error
 	userid_key := GenUserIDKey(args.UserID)
+  ts.storeMutex.Lock()
+  defer ts.storeMutex.Unlock()
 	if _, err = ts.storage.Get(userid_key); err != nil {
 		reply.Status = tribrpc.NoSuchUser
 		return nil
@@ -175,11 +219,15 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 	reply.Tribbles = tribbles
 	reply.Status = tribrpc.OK
+  //logger.Println("Return GetTribbles. args.UserID", args.UserID)
 	return nil
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
+  //logger.Println("Call GetTribblesBySubscription args.UserID", args.UserID)
 	var err error
+  ts.storeMutex.Lock()
+  defer ts.storeMutex.Unlock()
 	userid_key := GenUserIDKey(args.UserID)
 	if _, err = ts.storage.Get(userid_key); err != nil {
 		reply.Status = tribrpc.NoSuchUser
@@ -196,6 +244,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	}
 	reply.Tribbles = tribbles
 	reply.Status = tribrpc.OK
+  //logger.Println("Return GetTribblesBySubscription args.UserID", args.UserID)
 	return nil
 }
 
@@ -255,10 +304,18 @@ func (ts *tribServer) GetLateSubscriptionsTribbes(sub_list []string) ([]tribrpc.
 			timestamp: timestamp}
 		heap.Push(&pq, item)
 	}
-	var tribble_keys []string
-	for len(tribble_keys) < 100 && pq.Len() > 0 {
+	//var tribble_keys []string
+	var tribbles []tribrpc.Tribble
+	for len(tribbles) < 100 && pq.Len() > 0 {
 		item := heap.Pop(&pq).(*sortItem)
-		tribble_keys = append(tribble_keys, item.key)
+    var tribble tribrpc.Tribble
+    if tribble.Contents, err = ts.storage.Get(item.key); err != nil {
+      continue
+		}
+		userID, timestamp, _ := ParseTribbleKey(item.key)
+		tribble.UserID = userID
+		tribble.Posted = time.Unix(0, timestamp).UTC()
+    tribbles = append(tribbles, tribble)
 		sub_trib_index[item.pos]--
 		if sub_trib_index[item.pos] >= 0 {
 			tribble_str_list := sub_trib_list[item.pos]
@@ -271,6 +328,7 @@ func (ts *tribServer) GetLateSubscriptionsTribbes(sub_list []string) ([]tribrpc.
 			heap.Push(&pq, item)
 		}
 	}
+  /*
 	var tribbles []tribrpc.Tribble
 	for _, value := range tribble_keys {
 		var tribble tribrpc.Tribble
@@ -278,10 +336,12 @@ func (ts *tribServer) GetLateSubscriptionsTribbes(sub_list []string) ([]tribrpc.
 		tribble.UserID = userID
 		tribble.Posted = time.Unix(0, timestamp).UTC()
 		if tribble.Contents, err = ts.storage.Get(value); err != nil {
-			return nil, err
+      continue
+			//return nil, err
 		}
 		tribbles = append(tribbles, tribble)
 	}
+  */
 	return tribbles, nil
 }
 

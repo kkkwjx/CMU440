@@ -3,11 +3,11 @@ package storageserver
 import (
 	//	"errors"
 	"fmt"
-	"log"
+	//"log"
 	"net"
 	http "net/http"
 	rpc "net/rpc"
-	"os"
+	//"os"
 	"sort"
 	"strings"
 	"sync"
@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	logger *log.Logger
+	//logger *log.Logger
 )
 
 type storageServer struct {
@@ -49,7 +49,6 @@ type storageServer struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	var err error
 	ss := &storageServer{
 		ticker:         time.NewTicker(time.Millisecond * 1000),
 		sortedServerId: libstore.UintArray{},
@@ -61,11 +60,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		doneJoin:       make(chan bool, 1),
 		numNodes:       numNodes,
 		nodeID:         nodeID}
-	serverLogFile, err := os.OpenFile("log_storage.txt", os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Println(err.Error())
-	}
-	logger = log.New(serverLogFile, "Storage-- ", log.Lmicroseconds|log.Lshortfile)
+	var err error
+	//serverLogFile, err := os.OpenFile("log_storage." + fmt.Sprintf("%d", port), os.O_RDWR | os.O_CREATE, 0666)
+	//logger = log.New(serverLogFile, "[Storage]", log.Lmicroseconds|log.Lshortfile)
 	hostIp := fmt.Sprintf(":%d", port)
 	if ss.listener, err = net.Listen("tcp", hostIp); err != nil {
 		return nil, err
@@ -118,7 +115,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 	if _, ok := ss.connServers[args.ServerInfo.NodeID]; !ok {
 		ss.servers = append(ss.servers, args.ServerInfo)
 		ss.connServers[args.ServerInfo.NodeID] = true
-		logger.Println("Join", args.ServerInfo.NodeID)
+		//logger.Println("Join", args.ServerInfo.NodeID)
     if len(ss.connServers) == ss.numNodes {
 		  ss.doneJoin <- true
     }
@@ -213,8 +210,10 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
+  //logger.Println("Call AppendToList key: args.Key", args.Key)
 	right := ss.checkKeyRangeOrNot(args.Key)
 	if !right {
+    //logger.Println("Return AppendToList fail key: args.Key", args.Key, "WrongServer")
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -232,20 +231,24 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 	for _, value := range list {
 		if strings.EqualFold(value, args.Value) {
 			reply.Status = storagerpc.ItemExists
+      //logger.Println("Return AppendToList fail key: args.Key", args.Key, "ItemExists")
 			return nil
 		}
 	}
 	list = append(list, args.Value)
 	ss.kvStore[args.Key] = list
 	reply.Status = storagerpc.OK
+  //logger.Println("Return AppendToList key: args.Key", args.Key)
 	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
+  //logger.Println("Call RemoveFromList key: args.Key", args.Key)
 	right := ss.checkKeyRangeOrNot(args.Key)
 	if !right {
 		reply.Status = storagerpc.WrongServer
-		logger.Println("wrongserver remove list", args.Key)
+		//logger.Println("wrongserver remove list", args.Key)
+    //logger.Println("Return RemoveFromList fail key: args.Key", args.Key, "WrongServer")
 		return nil
 	}
 	mutex := ss.GetKeyMutex(args.Key)
@@ -266,11 +269,13 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 					ss.kvStore[args.Key] = list
 				}
 				reply.Status = storagerpc.OK
+        //logger.Println("Return RemoveFromList key: args.Key", args.Key)
 				return nil
 			}
 		}
 	}
 	reply.Status = storagerpc.ItemNotFound
+  //logger.Println("Return RemoveFromList key: args.Key", args.Key, "ItemNotFound")
 	return nil
 }
 
@@ -289,16 +294,11 @@ func (ss *storageServer) checkKeyRangeOrNot(key string) bool {
 			ss.sortedServerId = append(ss.sortedServerId, value.NodeID)
 		}
 		sort.Sort(ss.sortedServerId)
-		for _, value := range ss.sortedServerId {
-			logger.Println("sorted id :", value)
-		}
 	}
 	partition_keys := strings.Split(key, ":")
 	hash := libstore.StoreHash(partition_keys[0])
 	for _, value := range ss.sortedServerId {
-		logger.Println(value, hash, ss.nodeID)
 		if value >= hash {
-			logger.Println(value, hash, ss.nodeID)
 			return value == ss.nodeID
 		}
 	}
@@ -328,8 +328,8 @@ func (ss *storageServer) queryLeaseTime(key, addr string) int {
 
 func (ss *storageServer) getNoExpiredKeyAddr(key string) []string {
 	var addrs []string
-	defer ss.leaseMutex.Unlock()
 	ss.leaseMutex.Lock()
+	defer ss.leaseMutex.Unlock()
 	if value, ok := ss.leaseTime[key]; ok {
 		for addr, sec := range value {
 			if sec > 0 {
@@ -361,9 +361,7 @@ func (ss *storageServer) waitOneKeyLeaseExpired(key, addr string, wg *sync.WaitG
 		if err := cli.Call("LeaseCallbacks.RevokeLease", args, &reply); err != nil {
 			return
 		}
-		if reply.Status == storagerpc.OK {
-			done <- true
-		}
+		done <- true
 	}(ss, key, addr, done)
 	ticker := time.NewTicker(time.Millisecond * 1000)
 	for {

@@ -4,8 +4,8 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
-	"log"
-	"os"
+	//"log"
+	//"os"
 	"sort"
 	"time"
   "strings"
@@ -21,7 +21,7 @@ const (
 )
 
 var (
-	logger *log.Logger
+	//logger *log.Logger
 )
 
 type libstore struct {
@@ -86,14 +86,12 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 		revokeChan:  make(chan string, MAXN),
 		addCh:       make(chan cacheInfo, MAXN),
 		answerCh:    make(chan interface{}, MAXN)}
-	serverLogFile, err := os.OpenFile("server_log.txt", os.O_RDWR, 0666)
-	if err != nil {
-		fmt.Println(err.Error())
-	}
-	logger = log.New(serverLogFile, "Server-- ", log.Lmicroseconds|log.Lshortfile)
+	//serverLogFile, err := os.OpenFile("log_libstore." + myHostPort, os.O_RDWR | os.O_CREATE, 0666)
+	//logger = log.New(serverLogFile, "[Libstore]", log.Lmicroseconds|log.Lshortfile)
 	if len(myHostPort) == 0 {
 		ls.mode = Never
 	}
+  var err error
 	if err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(ls)); err != nil {
 		return nil, err
 	}
@@ -130,16 +128,14 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 }
 
 func (ls *libstore) Get(key string) (string, error) {
+  //logger.Println("Call Get. key: ", key)
 	ls.queryCh <- key
 	exist := <-ls.cacheOrNot
 	if exist {
 		value := <-ls.answerCh
-		str_value, ok := value.(string)
-		if ok {
-			return str_value, nil
-		} else {
-			return "", errors.New("type error.")
-		}
+		str_value := value.(string)
+    //logger.Println("Return Get. cache.", key, str_value)
+		return str_value, nil
 	}
 	ls.tw.queryCh <- key
 	cnt := <-ls.tw.answerCh
@@ -157,7 +153,8 @@ func (ls *libstore) Get(key string) (string, error) {
 	  return "", err
   }
 	if reply.Status != storagerpc.OK {
-		return "", errors.New("Error Get" + fmt.Sprintf(" %v", reply.Status))
+    //logger.Println("Return Get. fail .key: ", key, reply.Status)
+    return "", errors.New("Error Get  " + fmt.Sprintf("%s :  %v", key, reply.Status))
 	}
 	if reply.Lease.Granted {
 		ci := cacheInfo{
@@ -166,10 +163,12 @@ func (ls *libstore) Get(key string) (string, error) {
 			seconds: reply.Lease.ValidSeconds}
 		ls.addCh <- ci
 	}
+  //logger.Println("Return Get. storage.", key, reply.Value)
 	return reply.Value, nil
 }
 
 func (ls *libstore) Put(key, value string) error {
+  //logger.Println("Call put.  ", key, value)
 	var reply storagerpc.PutReply
 	args := &storagerpc.PutArgs{
 		Key:   key,
@@ -181,6 +180,7 @@ func (ls *libstore) Put(key, value string) error {
 	if reply.Status != storagerpc.OK {
 		return errors.New("Error Put")
 	}
+  //logger.Println("Return put. ", key, value)
 	return nil
 }
 
